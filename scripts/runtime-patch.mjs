@@ -78,6 +78,18 @@ function one(file, nodes, label) {
   return nodes[0];
 }
 
+function isBaseLsArgsCall(node) {
+  if (!ts.isCallExpression(node)) return false;
+  let callee = node.expression;
+  while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+  if (ts.isBinaryExpression(callee) && callee.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+    callee = callee.right;
+  }
+  if (ts.isPropertyAccessExpression(callee)) return callee.name.text === 'baseLsArgs';
+  if (ts.isIdentifier(callee)) return callee.text === 'baseLsArgs';
+  return false;
+}
+
 function applyEdits(file, source, edits) {
   for (const { start, end = start, text } of edits.sort((a, b) => b.start - a.start)) {
     source = source.slice(0, start) + text + source.slice(end);
@@ -190,35 +202,61 @@ function patchLanguageServer(bytes) {
     unsupported(file, 'args must be declared directly in the returned startup Promise');
   }
   const elements = args.initializer.elements;
-  if (elements.some(ts.isSpreadElement)) unsupported(file, 'spread arguments are not a recognized startup layout');
+  const spreadElements = elements.filter(ts.isSpreadElement);
   const edits = [];
-  for (const flag of ['--api_server_url', '--cloud_code_endpoint']) {
-    const entry = one(
-      file,
-      matching(fn.body, (node) => ts.isStringLiteral(node) && node.text === flag),
-      flag,
-    );
-    if (!elements.includes(entry)) unsupported(file, `${flag} must occur in the startup args array`);
-    const value = elements[elements.indexOf(entry) + 1];
-    if (!value || !ts.isStringLiteral(value) || !value.text.startsWith('https://')) {
-      unsupported(file, `${flag} must have a literal HTTPS vendor endpoint`);
+  if (spreadElements.length) {
+    if (spreadElements.some((spread) => !isBaseLsArgsCall(spread.expression))) {
+      unsupported(file, 'spread arguments are not a recognized startup layout');
     }
-    edits.push({ start: value.getStart(tree), end: value.end, text: `(${LOCAL_URL} || ${value.getText(tree)})` });
-  }
-  const inference = matching(fn.body, (node) => ts.isStringLiteral(node) && node.text === '--inference_api_server_url');
-  if (inference.length) {
-    const entry = one(file, inference, '--inference_api_server_url');
-    if (!elements.includes(entry)) unsupported(file, '--inference_api_server_url must occur in the startup args array');
-    const value = elements[elements.indexOf(entry) + 1];
-    if (!value || !ts.isStringLiteral(value) || !value.text.startsWith('https://')) {
-      unsupported(file, '--inference_api_server_url must have a literal HTTPS vendor endpoint');
-    }
-    edits.push({ start: value.getStart(tree), end: value.end, text: `(${LOCAL_URL} || ${value.getText(tree)})` });
-  } else {
     edits.push({
       start: args.parent.parent.end,
-      text: `\n        if (${LOCAL_URL}) args.push('--inference_api_server_url', ${LOCAL_URL});`,
+      text:
+        `\n        if (${LOCAL_URL}) {\n` +
+        `          let __hasInference = false;\n` +
+        `          for (let __i = 0; __i < args.length; __i++) {\n` +
+        `            if (args[__i] === '--api_server_url' || args[__i] === '--cloud_code_endpoint' || args[__i] === '--inference_api_server_url') {\n` +
+        `              args[__i + 1] = ${LOCAL_URL};\n` +
+        `              if (args[__i] === '--inference_api_server_url') __hasInference = true;\n` +
+        `            }\n` +
+        `          }\n` +
+        `          if (!__hasInference) {\n` +
+        `            args.push('--inference_api_server_url', ${LOCAL_URL});\n` +
+        `          }\n` +
+        `        }`,
     });
+  } else {
+    for (const flag of ['--api_server_url', '--cloud_code_endpoint']) {
+      const entry = one(
+        file,
+        matching(fn.body, (node) => ts.isStringLiteral(node) && node.text === flag),
+        flag,
+      );
+      if (!elements.includes(entry)) unsupported(file, `${flag} must occur in the startup args array`);
+      const value = elements[elements.indexOf(entry) + 1];
+      if (!value || !ts.isStringLiteral(value) || !value.text.startsWith('https://')) {
+        unsupported(file, `${flag} must have a literal HTTPS vendor endpoint`);
+      }
+      edits.push({ start: value.getStart(tree), end: value.end, text: `(${LOCAL_URL} || ${value.getText(tree)})` });
+    }
+    const inference = matching(
+      fn.body,
+      (node) => ts.isStringLiteral(node) && node.text === '--inference_api_server_url',
+    );
+    if (inference.length) {
+      const entry = one(file, inference, '--inference_api_server_url');
+      if (!elements.includes(entry))
+        unsupported(file, '--inference_api_server_url must occur in the startup args array');
+      const value = elements[elements.indexOf(entry) + 1];
+      if (!value || !ts.isStringLiteral(value) || !value.text.startsWith('https://')) {
+        unsupported(file, '--inference_api_server_url must have a literal HTTPS vendor endpoint');
+      }
+      edits.push({ start: value.getStart(tree), end: value.end, text: `(${LOCAL_URL} || ${value.getText(tree)})` });
+    } else {
+      edits.push({
+        start: args.parent.parent.end,
+        text: `\n        if (${LOCAL_URL}) args.push('--inference_api_server_url', ${LOCAL_URL});`,
+      });
+    }
   }
   if (!fn.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)) {
     edits.push({ start: fn.getStart(tree), text: 'async ' });

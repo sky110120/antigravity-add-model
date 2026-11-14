@@ -26,6 +26,39 @@ function startLanguageServer(port, csrf, options = {}) {
 exports.setupLocalCertTrust = () => 'vendor certificate policy';
 `;
 
+const vendorServerSpread = `
+exports.startLanguageServer = startLanguageServer;
+const lsDefaults_1 = {
+  baseLsArgs: () => [
+    '--standalone',
+    '--api_server_url',
+    'https://generativelanguage.googleapis.com',
+    '--cloud_code_endpoint',
+    'https://daily-cloudcode-pa.googleapis.com',
+  ],
+};
+function startLanguageServer(port, csrf, options = {}) {
+  const { headless, hostBridgeUrl, hostBridgeToken, wsl } = options;
+  return new Promise((resolve) => {
+    record('vendor-start');
+    const args = [
+      ...(0, lsDefaults_1.baseLsArgs)({
+        ideVersion: '2.32.1',
+        httpsServerPort: port,
+        csrfToken: csrf,
+        appDataDir: 'test',
+      }),
+      '--enable_sidecars',
+    ];
+    if (hostBridgeUrl && hostBridgeToken) args.push('--host_bridge_url=' + hostBridgeUrl, '--host_bridge_token=' + hostBridgeToken);
+    if (headless) args.push('--headless');
+    if (wsl) args.push('--wsl-distro=' + wsl.distro, '--exit_on_stdin_close');
+    resolve({ args, wsl });
+  });
+}
+exports.setupLocalCertTrust = () => 'vendor certificate policy';
+`;
+
 const vendorPreload = `
 const electron_1 = require('electron');
 const storageAPI = { getItems: () => electron_1.ipcRenderer.invoke('storage:get-items') };
@@ -43,7 +76,11 @@ const storageAPI = { getCustomModels: () => electron_1.ipcRenderer.invoke('model
 window.addEventListener('DOMContentLoaded', () => storageAPI.getCustomModels());
 `;
 
-function fixture(overrides: Record<string, string> = {}, build = customPreload, contextBuild = '// context preload fixture') {
+function fixture(
+  overrides: Record<string, string> = {},
+  build = customPreload,
+  contextBuild = '// context preload fixture',
+) {
   const files: Record<string, string> = {
     'dist/main.js': vendorMain,
     'dist/languageServer.js': vendorServer,
@@ -184,6 +221,28 @@ describe('vendor runtime adapter', () => {
     expect(f.startProxy).toHaveBeenCalledOnce();
     expect(args).toContain('--headless');
     expect(args[args.indexOf('--api_server_url') + 1]).toBe('http://localhost:61001');
+  });
+
+  it('supports modern spread baseLsArgs layout and redirects endpoints', async () => {
+    const f = serverFixture(vendorServerSpread);
+    const { args } = await f.exports.startLanguageServer(60123, 'csrf');
+    expect(f.startProxy).toHaveBeenCalledOnce();
+    for (const flag of ['--api_server_url', '--cloud_code_endpoint', '--inference_api_server_url']) {
+      expect(args[args.indexOf(flag) + 1]).toBe('http://localhost:61001');
+    }
+  });
+
+  it('preserves vendor WSL mode with modern spread baseLsArgs layout', async () => {
+    const f = serverFixture(vendorServerSpread);
+    const wsl = { distro: 'Ubuntu' };
+    const result = await f.exports.startLanguageServer(60123, 'csrf', { wsl });
+    expect(f.startProxy).not.toHaveBeenCalled();
+    expect(result.wsl).toBe(wsl);
+    expect(result.args[result.args.indexOf('--api_server_url') + 1]).toBe('https://generativelanguage.googleapis.com');
+    expect(result.args[result.args.indexOf('--cloud_code_endpoint') + 1]).toBe(
+      'https://daily-cloudcode-pa.googleapis.com',
+    );
+    expect(result.args).not.toContain('--inference_api_server_url');
   });
 
   it('preserves all vendor bridges and appends an isolated sandbox-compatible preload', () => {
