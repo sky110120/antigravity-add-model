@@ -142,18 +142,39 @@ export function mergeCloudCodeCatalog(upstream: unknown, entries: CatalogEntry[]
   const topLevelIds: string[] = [];
 
   for (const [baseSlug, group] of activeGroups) {
+    // Sort variants: high/xhigh first so that the default option picked by the UI is high
+    const effortOrder = ['xhigh', 'high', 'medium', 'low', 'minimal', 'none'];
+    const sortedVariants = [...group.variants].sort((a, b) => {
+      const ia = effortOrder.indexOf(a.effort);
+      const ib = effortOrder.indexOf(b.effort);
+      return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+    });
+
+    // In grouped_models / groupedModels, supportedThinkingLevels is ordered low -> high
+    const thinkingLevelsOrder = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+    const sortedThinkingLevels = [...group.variants].sort((a, b) => {
+      const ia = thinkingLevelsOrder.indexOf(a.effort);
+      const ib = thinkingLevelsOrder.indexOf(b.effort);
+      return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+    });
+
     customGroupedModels[baseSlug] = {
       displayName: group.baseDisplayName,
-      supportedThinkingLevels: group.variants.map((v) => ({
+      // protojson maps snake_case and camelCase spellings below to ONE field;
+      // emitting both makes the language server fail with a duplicate field
+      // parse error on supported_thinking_levels. Keep camelCase only.
+      supportedThinkingLevels: sortedThinkingLevels.map((v) => ({
         thinkingSuffix: v.effort,
         thinkingDisplayName: v.effortDisplayName,
       })),
-      supported_thinking_levels: group.variants.map((v) => ({
-        thinking_suffix: v.effort,
-        thinking_display_name: v.effortDisplayName,
-      })),
     };
-    topLevelIds.push(baseSlug);
+
+    // The variants MUST be in topLevelIds (agentModelSorts.modelIds) so that language_server
+    // registers them in clientModelConfigs with modelId `${baseSlug}-${effort}`.
+    // The frontend's w7c will automatically deduplicate them into a single row using groupedModels.
+    for (const v of sortedVariants) {
+      topLevelIds.push(v.variantSlug);
+    }
 
     // Pick default variant (prefer high -> medium -> low -> first)
     const defaultVariant =
@@ -164,6 +185,7 @@ export function mergeCloudCodeCatalog(upstream: unknown, entries: CatalogEntry[]
     // Base model entry
     extraEntries.push({
       slug: baseSlug,
+      model: defaultVariant.entry.model,
       mapEntry: { ...defaultVariant.entry.mapEntry, displayName: group.baseDisplayName },
       listEntry: { ...defaultVariant.entry.listEntry, name: 'models/' + baseSlug, displayName: group.baseDisplayName },
     });
@@ -172,6 +194,7 @@ export function mergeCloudCodeCatalog(upstream: unknown, entries: CatalogEntry[]
     for (const v of group.variants) {
       extraEntries.push({
         slug: v.variantSlug,
+        model: v.entry.model,
         mapEntry: { ...v.entry.mapEntry, displayName: `${group.baseDisplayName} (${v.effort})` },
         listEntry: {
           ...v.entry.listEntry,
@@ -218,16 +241,34 @@ export function mergeCloudCodeCatalog(upstream: unknown, entries: CatalogEntry[]
           ? result.groupedModels
           : {}
     ) as Record<string, unknown>;
-    result.grouped_models = { ...upstreamGrouped, ...customGroupedModels };
+    // grouped_models and groupedModels are one proto field; leaving both
+    // spellings behind is another duplicate-field parse error. Collapse to
+    // the canonical camelCase json name.
+    delete result.grouped_models;
+    delete result.groupedModels;
     result.groupedModels = { ...upstreamGrouped, ...customGroupedModels };
   }
 
   if (!entries.length) return result;
 
   const ids = [...new Set(topLevelIds)];
-  const sorts = Array.isArray(result.agentModelSorts) ? result.agentModelSorts : [];
+  // Same proto field under two spellings (agentModelSorts/agent_model_sorts):
+  // keep whichever array spelling is already present, never both. Read before
+  // deleting: the key must survive under exactly one spelling.
+  const sorts = Array.isArray(result.agentModelSorts)
+    ? result.agentModelSorts
+    : Array.isArray(result.agent_model_sorts)
+      ? result.agent_model_sorts
+      : [];
+  const sortsKey: string = Array.isArray(result.agentModelSorts)
+    ? 'agentModelSorts'
+    : Array.isArray(result.agent_model_sorts)
+      ? 'agent_model_sorts'
+      : 'agentModelSorts';
+  delete result.agentModelSorts;
+  delete result.agent_model_sorts;
   let attached = false;
-  result.agentModelSorts = sorts.map((sort) => {
+  result[sortsKey] = sorts.map((sort) => {
     if (!sort || typeof sort !== 'object' || !Array.isArray(sort.groups)) return sort;
     return {
       ...sort,
@@ -240,7 +281,6 @@ export function mergeCloudCodeCatalog(upstream: unknown, entries: CatalogEntry[]
       }),
     };
   });
-  if (!attached)
-    (result.agentModelSorts as unknown[]).push({ displayName: 'Custom models', groups: [{ modelIds: ids }] });
+  if (!attached) (result[sortsKey] as unknown[]).push({ displayName: 'Custom models', groups: [{ modelIds: ids }] });
   return result;
 }

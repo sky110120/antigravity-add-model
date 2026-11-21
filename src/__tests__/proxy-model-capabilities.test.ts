@@ -459,9 +459,10 @@ describe('IDE Cloud Code catalog and picker groups', () => {
       {},
       { models, captureHandler: () => {} },
     );
-    expect(catalog.grouped_models).toBeDefined();
+    // Both spellings map to one proto field: only camelCase may survive.
     expect(catalog.groupedModels).toBeDefined();
-    const group = (catalog.grouped_models as any)['custom-claude-sonnet-4-6'];
+    expect(catalog.grouped_models).toBeUndefined();
+    const group = (catalog.groupedModels as any)['custom-claude-sonnet-4-6'];
     expect(group).toBeDefined();
     expect(group.displayName).toBe('claude-sonnet-4-6');
     expect(group.supportedThinkingLevels).toEqual([
@@ -469,12 +470,14 @@ describe('IDE Cloud Code catalog and picker groups', () => {
       { thinkingSuffix: 'medium', thinkingDisplayName: 'Medium' },
       { thinkingSuffix: 'high', thinkingDisplayName: 'High' },
     ]);
+    // Top-level agentModelSorts must contain the variant slugs so language_server populates clientModelConfigs,
+    // which the frontend w7c then deduplicates into a single row using groupedModels.
     const customSort = (catalog.agentModelSorts as any[]).find((s) => s.displayName === 'Custom models');
     expect(customSort).toBeDefined();
     const topLevelIds = customSort.groups[0].modelIds;
-    expect(topLevelIds).toContain('custom-claude-sonnet-4-6');
-    expect(topLevelIds).not.toContain('custom-claude-sonnet-4-6-low');
-    expect(topLevelIds).not.toContain('custom-claude-sonnet-4-6-medium');
-    expect(topLevelIds).not.toContain('custom-claude-sonnet-4-6-high');
+    expect(topLevelIds).toContain('custom-claude-sonnet-4-6-high');
+    expect(topLevelIds).toContain('custom-claude-sonnet-4-6-medium');
+    expect(topLevelIds).toContain('custom-claude-sonnet-4-6-low');
+    expect(topLevelIds).not.toContain('custom-claude-sonnet-4-6');
   });
 });
