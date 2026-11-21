@@ -133,7 +133,13 @@ import {
 // Model configuration & capability detection
 import { detectModelCapabilities, nativeCatalogCapabilities, nativeModelExperiments } from './proxy/modelUtils';
 import { CloudCodeRouting } from './proxy/cloudCodeRouting';
-import { catalogModelSlug, catalogDisplayNames, localModelSlug, mergeCloudCodeCatalog } from './proxy/modelCatalog';
+import {
+  catalogModelSlug,
+  catalogDisplayNames,
+  localModelSlug,
+  mergeCloudCodeCatalog,
+  slugPart,
+} from './proxy/modelCatalog';
 import { allocateModelIdentities, ModelIdentity } from './modelIdentity';
 
 // Custom request transport and model storage
@@ -211,12 +217,23 @@ function matchCustomModel(models: CustomModel[], ...selectors: unknown[]): Custo
     if (typeof selector !== 'string') continue;
     const exact = models.find((model) => model.name === selector);
     if (exact) return exact;
+    const clean = selector.replace(/^models\//, '');
     const named = models.find(
-      (model) =>
-        identities.get(model.name)?.catalogId === selector.replace(/^models\//, '') ||
-        localModelSlug(model) === selector.replace(/^models\//, ''),
+      (model) => identities.get(model.name)?.catalogId === clean || localModelSlug(model) === clean,
     );
     if (named) return named;
+    const variantMatch = models.find((model) => {
+      const match =
+        (model.displayName || '').match(/^(.*?)\s*\((low|medium|high|xhigh|minimal|none)\)$/i) ||
+        (model.name || '').match(/^(.*?)-(low|medium|high|xhigh)$/i);
+      const base = match ? match[1].trim() : model.externalModelName || '';
+      const effort = (model.reasoningEffort || (match ? match[2] : '')).toLowerCase();
+      const baseSlug = 'custom-' + slugPart(base);
+      if (clean === `${baseSlug}-${effort}`) return true;
+      if (clean === baseSlug && (effort === 'high' || !effort)) return true;
+      return false;
+    });
+    if (variantMatch) return variantMatch;
   }
   return models.find((model) => {
     const identity = identities.get(model.name);
@@ -249,6 +266,7 @@ function customCloudCodeCatalog(upstream: unknown = {}): Record<string, unknown>
         const capabilities = getAdvertisedModelCapabilities(model);
         return {
           slug,
+          model,
           mapEntry: {
             displayName: labels.get(model.name),
             ...capabilities,

@@ -3,6 +3,7 @@ export interface CatalogIdentity {
     externalModelName?: string;
     displayName?: string;
 }
+export declare const slugPart: (value: string) => string;
 export declare function legacyModelSlug(model: CatalogIdentity): string;
 /** An always-available routing alias tied to the saved model, including its effort settings. */
 export declare function localModelSlug(model: CatalogIdentity): string;
@@ -14,6 +15,10 @@ export interface CatalogEntry {
     slug: string;
     mapEntry: Record<string, unknown>;
     listEntry: Record<string, unknown>;
+    model?: CatalogIdentity & {
+        reasoningEffort?: string;
+        copyFrom?: string;
+    };
 }
 /** Preserve native metadata while advertising only configured custom models in every response shape. */
 export declare function mergeCloudCodeCatalog(upstream: unknown, entries: CatalogEntry[]): Record<string, unknown>;

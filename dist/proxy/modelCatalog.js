@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.slugPart = void 0;
 exports.legacyModelSlug = legacyModelSlug;
 exports.localModelSlug = localModelSlug;
 exports.catalogModelSlug = catalogModelSlug;
@@ -12,12 +13,13 @@ const slugPart = (value) => value
     .replace(/[^a-zA-Z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .toLowerCase();
+exports.slugPart = slugPart;
 function legacyModelSlug(model) {
-    return 'custom-' + slugPart(model.externalModelName || model.name);
+    return 'custom-' + (0, exports.slugPart)(model.externalModelName || model.name);
 }
 /** An always-available routing alias tied to the saved model, including its effort settings. */
 function localModelSlug(model) {
-    return `custom-${slugPart(model.name)}-${(0, node_crypto_1.createHash)('sha256').update(model.name).digest('hex').slice(0, 12)}`;
+    return `custom-${(0, exports.slugPart)(model.name)}-${(0, node_crypto_1.createHash)('sha256').update(model.name).digest('hex').slice(0, 12)}`;
 }
 function catalogModelSlug(model, models) {
     const legacy = legacyModelSlug(model);
@@ -68,13 +70,97 @@ function mergeCloudCodeCatalog(upstream, entries) {
     const result = upstream && typeof upstream === 'object' && !Array.isArray(upstream)
         ? { ...upstream }
         : {};
+    // Detect and group reasoning effort variants (e.g. low, medium, high)
+    const groupCandidates = new Map();
+    const entryGroupMap = new Map();
+    for (const entry of entries) {
+        const disp = (typeof entry.mapEntry?.displayName === 'string' ? entry.mapEntry.displayName : '') ||
+            (typeof entry.listEntry?.displayName === 'string' ? entry.listEntry.displayName : '') ||
+            entry.model?.displayName ||
+            '';
+        const effortMatch = disp.match(/^(.*?)\s*\((low|medium|high|xhigh|minimal|none)\)$/i) ||
+            (entry.model?.name || '').match(/^(.*?)-(low|medium|high|xhigh)$/i);
+        const effort = (entry.model?.reasoningEffort || (effortMatch ? effortMatch[2] : '')).toLowerCase();
+        const baseName = effortMatch ? effortMatch[1].trim() : entry.model?.externalModelName || '';
+        if (effort && baseName) {
+            const baseSlug = 'custom-' + (0, exports.slugPart)(baseName);
+            const variantSlug = `${baseSlug}-${effort}`;
+            const effortDisplayName = effort === 'xhigh'
+                ? 'XHigh'
+                : effort === 'minimal'
+                    ? 'Minimal'
+                    : effort === 'max'
+                        ? 'Max'
+                        : effort.charAt(0).toUpperCase() + effort.slice(1);
+            if (!groupCandidates.has(baseSlug)) {
+                groupCandidates.set(baseSlug, { baseDisplayName: baseName, baseSlug, variants: [] });
+            }
+            groupCandidates.get(baseSlug).variants.push({ effort, effortDisplayName, variantSlug, entry });
+        }
+    }
+    // Only form a group if there are at least 2 variants
+    const activeGroups = new Map();
+    for (const [baseSlug, group] of groupCandidates) {
+        if (group.variants.length >= 2) {
+            activeGroups.set(baseSlug, group);
+            for (const v of group.variants) {
+                entryGroupMap.set(v.entry, { baseSlug, variantSlug: v.variantSlug });
+            }
+        }
+    }
+    // Build extra grouped_models and top-level IDs
+    const customGroupedModels = {};
+    const extraEntries = [];
+    const topLevelIds = [];
+    for (const [baseSlug, group] of activeGroups) {
+        customGroupedModels[baseSlug] = {
+            displayName: group.baseDisplayName,
+            supportedThinkingLevels: group.variants.map((v) => ({
+                thinkingSuffix: v.effort,
+                thinkingDisplayName: v.effortDisplayName,
+            })),
+            supported_thinking_levels: group.variants.map((v) => ({
+                thinking_suffix: v.effort,
+                thinking_display_name: v.effortDisplayName,
+            })),
+        };
+        topLevelIds.push(baseSlug);
+        // Pick default variant (prefer high -> medium -> low -> first)
+        const defaultVariant = group.variants.find((v) => v.effort === 'high') ||
+            group.variants.find((v) => v.effort === 'medium') ||
+            group.variants[0];
+        // Base model entry
+        extraEntries.push({
+            slug: baseSlug,
+            mapEntry: { ...defaultVariant.entry.mapEntry, displayName: group.baseDisplayName },
+            listEntry: { ...defaultVariant.entry.listEntry, name: 'models/' + baseSlug, displayName: group.baseDisplayName },
+        });
+        // Variant entries under baseSlug-effort
+        for (const v of group.variants) {
+            extraEntries.push({
+                slug: v.variantSlug,
+                mapEntry: { ...v.entry.mapEntry, displayName: `${group.baseDisplayName} (${v.effort})` },
+                listEntry: {
+                    ...v.entry.listEntry,
+                    name: 'models/' + v.variantSlug,
+                    displayName: `${group.baseDisplayName} (${v.effort})`,
+                },
+            });
+        }
+    }
+    for (const entry of entries) {
+        if (!entryGroupMap.has(entry)) {
+            topLevelIds.push(entry.slug);
+        }
+    }
+    const allEntries = [...entries, ...extraEntries];
     let merged = false;
     for (const key of ['models', 'availableModels', 'available_models']) {
         const value = result[key];
         if (Array.isArray(value)) {
-            const customNames = new Set(entries.map((entry) => entry.listEntry.name));
+            const customNames = new Set(allEntries.map((entry) => entry.listEntry.name));
             result[key] = [
-                ...entries.map((entry) => ({ ...entry.listEntry })),
+                ...allEntries.map((entry) => ({ ...entry.listEntry })),
                 ...value.filter((item) => !customNames.has(item?.name)),
             ];
             merged = true;
@@ -82,16 +168,25 @@ function mergeCloudCodeCatalog(upstream, entries) {
         else if (value && typeof value === 'object') {
             result[key] = {
                 ...value,
-                ...Object.fromEntries(entries.map((entry) => [entry.slug, { ...entry.mapEntry }])),
+                ...Object.fromEntries(allEntries.map((entry) => [entry.slug, { ...entry.mapEntry }])),
             };
             merged = true;
         }
     }
     if (!merged)
-        result.models = Object.fromEntries(entries.map((entry) => [entry.slug, { ...entry.mapEntry }]));
+        result.models = Object.fromEntries(allEntries.map((entry) => [entry.slug, { ...entry.mapEntry }]));
+    if (Object.keys(customGroupedModels).length > 0) {
+        const upstreamGrouped = (result.grouped_models && typeof result.grouped_models === 'object' && !Array.isArray(result.grouped_models)
+            ? result.grouped_models
+            : result.groupedModels && typeof result.groupedModels === 'object' && !Array.isArray(result.groupedModels)
+                ? result.groupedModels
+                : {});
+        result.grouped_models = { ...upstreamGrouped, ...customGroupedModels };
+        result.groupedModels = { ...upstreamGrouped, ...customGroupedModels };
+    }
     if (!entries.length)
         return result;
-    const ids = [...new Set(entries.map((entry) => entry.slug))];
+    const ids = [...new Set(topLevelIds)];
     const sorts = Array.isArray(result.agentModelSorts) ? result.agentModelSorts : [];
     let attached = false;
     result.agentModelSorts = sorts.map((sort) => {

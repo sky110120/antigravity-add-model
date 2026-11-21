@@ -182,8 +182,11 @@ describe('custom model vision capability advertisement', () => {
   );
   it('keeps real context limits in the provider-facing model listing with native compatibility enabled', () => {
     const response = requestModels('/v1beta/models', { models: [] }, undefined, {
-      provider: 'ollama', externalModelName: 'qwen3.8:27b', contextWindow: 85000,
-      maxOutputTokens: 8192, compactionThresholdPercent: 80,
+      provider: 'ollama',
+      externalModelName: 'qwen3.8:27b',
+      contextWindow: 85000,
+      maxOutputTokens: 8192,
+      compactionThresholdPercent: 80,
     });
     expect(response.models).toHaveLength(3);
     for (const entry of response.models) {
@@ -278,18 +281,24 @@ describe('IDE Cloud Code catalog and picker groups', () => {
   });
 
   it.each(['models', 'availableModels', 'available_models'])(
-    'adds the bounded native compatibility floor with a checkpoint policy based on real limits in %s', (key) => {
+    'adds the bounded native compatibility floor with a checkpoint policy based on real limits in %s',
+    (key) => {
       const native = { displayName: 'Native', maxTokens: 128000 };
       const response = requestModels('/v1internal:fetchAvailableModels', { [key]: { native } }, undefined, {
-        provider: 'ollama', externalModelName: 'qwen3.8:27b', contextWindow: 85000,
-        maxOutputTokens: 8192, compactionThresholdPercent: 80,
+        provider: 'ollama',
+        externalModelName: 'qwen3.8:27b',
+        contextWindow: 85000,
+        maxOutputTokens: 8192,
+        compactionThresholdPercent: 80,
       });
       expect(response[key].native).toEqual(native);
       for (const id of customIds(response)) {
         const entry = response[key][id];
         expect(entry).toMatchObject({ maxTokens: 90000, maxOutputTokens: 8192 });
-        expect(JSON.parse(entry.modelExperiments.experiments.CASCADE_USE_EXPERIMENT_CHECKPOINTER.stringValue))
-          .toEqual({ tokenThreshold: 68000, maxTokenLimit: 75784 });
+        expect(JSON.parse(entry.modelExperiments.experiments.CASCADE_USE_EXPERIMENT_CHECKPOINTER.stringValue)).toEqual({
+          tokenThreshold: 68000,
+          maxTokenLimit: 75784,
+        });
       }
     },
   );
@@ -429,4 +438,43 @@ describe('IDE Cloud Code catalog and picker groups', () => {
       }
     },
   );
+
+  it('groups multiple reasoning effort variants into grouped_models and deduplicates agentModelSorts', () => {
+    const models = ['low', 'medium', 'high'].map((effort) => ({
+      name: `models/custom/claude-sonnet-4-6-${effort}`,
+      displayName: `claude-sonnet-4-6 (${effort})`,
+      description: '',
+      provider: 'openai',
+      apiFormat: 'openai',
+      apiKey: '',
+      apiUrl: 'http://127.0.0.1:8000/v1',
+      externalModelName: 'claude-sonnet-4-6',
+      reasoningEffort: effort,
+      maxRetries: 0,
+    }));
+    const catalog = requestModels(
+      '/v1internal:fetchAvailableModels',
+      { models: {} },
+      undefined,
+      {},
+      { models, captureHandler: () => {} },
+    );
+    expect(catalog.grouped_models).toBeDefined();
+    expect(catalog.groupedModels).toBeDefined();
+    const group = (catalog.grouped_models as any)['custom-claude-sonnet-4-6'];
+    expect(group).toBeDefined();
+    expect(group.displayName).toBe('claude-sonnet-4-6');
+    expect(group.supportedThinkingLevels).toEqual([
+      { thinkingSuffix: 'low', thinkingDisplayName: 'Low' },
+      { thinkingSuffix: 'medium', thinkingDisplayName: 'Medium' },
+      { thinkingSuffix: 'high', thinkingDisplayName: 'High' },
+    ]);
+    const customSort = (catalog.agentModelSorts as any[]).find((s) => s.displayName === 'Custom models');
+    expect(customSort).toBeDefined();
+    const topLevelIds = customSort.groups[0].modelIds;
+    expect(topLevelIds).toContain('custom-claude-sonnet-4-6');
+    expect(topLevelIds).not.toContain('custom-claude-sonnet-4-6-low');
+    expect(topLevelIds).not.toContain('custom-claude-sonnet-4-6-medium');
+    expect(topLevelIds).not.toContain('custom-claude-sonnet-4-6-high');
+  });
 });

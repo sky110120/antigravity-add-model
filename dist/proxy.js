@@ -144,10 +144,24 @@ function matchCustomModel(models, ...selectors) {
         const exact = models.find((model) => model.name === selector);
         if (exact)
             return exact;
-        const named = models.find((model) => identities.get(model.name)?.catalogId === selector.replace(/^models\//, '') ||
-            (0, modelCatalog_1.localModelSlug)(model) === selector.replace(/^models\//, ''));
+        const clean = selector.replace(/^models\//, '');
+        const named = models.find((model) => identities.get(model.name)?.catalogId === clean || (0, modelCatalog_1.localModelSlug)(model) === clean);
         if (named)
             return named;
+        const variantMatch = models.find((model) => {
+            const match = (model.displayName || '').match(/^(.*?)\s*\((low|medium|high|xhigh|minimal|none)\)$/i) ||
+                (model.name || '').match(/^(.*?)-(low|medium|high|xhigh)$/i);
+            const base = match ? match[1].trim() : model.externalModelName || '';
+            const effort = (model.reasoningEffort || (match ? match[2] : '')).toLowerCase();
+            const baseSlug = 'custom-' + (0, modelCatalog_1.slugPart)(base);
+            if (clean === `${baseSlug}-${effort}`)
+                return true;
+            if (clean === baseSlug && (effort === 'high' || !effort))
+                return true;
+            return false;
+        });
+        if (variantMatch)
+            return variantMatch;
     }
     return models.find((model) => {
         const identity = identities.get(model.name);
@@ -172,6 +186,7 @@ function customCloudCodeCatalog(upstream = {}) {
         const capabilities = getAdvertisedModelCapabilities(model);
         return {
             slug,
+            model,
             mapEntry: {
                 displayName: labels.get(model.name),
                 ...capabilities,
